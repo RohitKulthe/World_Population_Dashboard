@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>World Population Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <script src="https://unpkg.com/topojson-client@3"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background-color: #f5f5f5;
+        }
+
+        .dashboard {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        .filters {
+            background-color: white;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+
+        .chart-container {
+            background-color: white;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+
+        .map-container {
+            height: 500px;
+            position: relative;
+        }
+
+        .filter-group {
+            margin-right: 20px;
+            display: inline-block;
+        }
+
+        .loader {
+            border: 5px solid #f3f3f3;
+            border-top: 5px solid #3498db;
+            border-radius: 50%;
+            width: 50px;
+            height: 50px;
+            animation: spin 1s linear infinite;
+            margin: 20px auto;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .error {
+            color: #d32f2f;
+            padding: 15px;
+            margin: 20px 0;
+            border-radius: 4px;
+            background-color: #ffebee;
+        }
+    </style>
+</head>
+<body>
+    <div class="dashboard">
+        <h1>World Population Dashboard</h1>
+        <div class="filters">
+            <div class="filter-group">
+                <label>Year: </label>
+                <input type="range" id="yearSlider" min="1960" max="2023" value="2023">
+                <span id="yearValue">2023</span>
+            </div>
+            <div class="filter-group">
+                <label>Region: </label>
+                <select id="regionFilter">
+                    <option value="all">All Regions</option>
+                </select>
+            </div>
+            <div class="filter-group">
+                <label>Search Country: </label>
+                <input type="text" id="countrySearch">
+            </div>
+        </div>
+
+        <div id="loading" class="loader"></div>
+        <div id="error" class="error" style="display: none;"></div>
+
+        <div class="chart-container">
+            <canvas id="populationChart"></canvas>
+        </div>
+
+        <div class="chart-container">
+            <canvas id="growthChart"></canvas>
+        </div>
+
+        <div class="chart-container">
+            <div class="map-container" id="worldMap"></div>
+        </div>
+    </div>
+
+    <script>
+        const WORLD_BANK_API = 'https://api.worldbank.org/v2/country';
+        const REST_COUNTRIES_API = 'https://restcountries.com/v3.1/all';
+        let populationChart, growthChart;
+        let populationData = { countries: [], globalGrowth: [] };
+
+        async function fetchData() {
+            try {
+                // Fetch population data
+                const popResponse = await fetch(
+                    `${WORLD_BANK_API}/all/indicator/SP.POP.TOTL?format=json&date=2023&per_page=300`
+                );
+                const popData = await popResponse.json();
+                
+                // Fetch country data
+                const countriesResponse = await fetch(REST_COUNTRIES_API);
+                const countriesData = await countriesResponse.json();
+
+                // Process and merge data
+                const processed = processCountryData(popData[1], countriesData);
+                
+                // Fetch historical data
+                const historicalResponse = await fetch(
+                    `${WORLD_BANK_API}/WLD/indicator/SP.POP.TOTL?format=json&date=1960:2023&per_page=100`
+                );
+                const historicalData = await historicalResponse.json();
+                processed.globalGrowth = historicalData[1].map(d => ({
+                    year: d.date,
+                    population: d.value
+                }));
+
+                return processed;
+            } catch (error) {
+                showError('Failed to load data. Please try again later.');
+                console.error(error);
+                return null;
+            }
+        }
+
+        function processCountryData(wbData, countriesData) {
+            const processed = { countries: [] };
+            
+            wbData.forEach(item => {
+                const countryInfo = countriesData.find(c => 
+                    c.cca3 === item.country.id || 
+                    c.name.common === item.country.value
+                );
+                
+                if (countryInfo && item.value) {
+                    processed.countries.push({
+                        name: countryInfo.name.common,
+                        code: countryInfo.cca3,
+                        population: item.value,
+                        region: countryInfo.region,
+                        subregion: countryInfo.subregion,
+                        capital: countryInfo.capital?.[0] || 'N/A'
+                    });
+                }
+            });
+
+            return processed;
+        }
+
+        function initCharts() {
+            // Population Chart
+            const ctx1 = document.getElementById('populationChart');
+            populationChart = new Chart(ctx1, {
+                type: 'bar',
+                data: {
+                    labels: [],
+                    datasets: [{
+                        label: 'Population',
+                        data: [],
+                        backgroundColor: 'rgba(54, 162, 235, 0.6)'
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    plugins: {
+                        title: { display: true, text: 'Population by Country' }
+                    }
+                }
+            });
+
+            // Growth Chart
+            const ctx2 = document.getElementById('growthChart');
+            growthChart = new Chart(ctx2, {
+                type: 'line',
+                data: {
+                    labels: [],
+                    datasets: [{
+                        label: 'World Population',
+                        data: [],
+                        borderColor: 'rgba(255, 99, 132, 1)',
+                        fill: false
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    plugins: {
+                        title: { display: true, text: 'World Population Growth Over Time' }
+                    }
+                }
+            });
+        }
+
+        async function initWorldMap() {
+            const width = 1000;
+            const height = 500;
+            const svg = d3.select("#worldMap")
+                .append("svg")
+                .attr("width", width)
+                .attr("height", height);
+
+            const projection = d3.geoNaturalEarth1()
+                .scale(130)
+                .translate([width / 2, height / 2]);
+
+            const path = d3.geoPath().projection(projection);
+
+            try {
+                const world = await d3.json('https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json');
+                const countries = topojson.feature(world, world.objects.countries).features;
+
+                // Color scale
+                const maxPop = d3.max(populationData.countries, d => d.population);
+                const colorScale = d3.scaleSequentialLog(d3.interpolateBlues)
+                    .domain([1, maxPop]);
+
+                svg.selectAll("path")
+                    .data(countries)
+                    .enter()
+                    .append("path")
+                    .attr("d", path)
+                    .attr("fill", d => {
+                        const country = populationData.countries.find(c => c.code === d.id);
+                        return country ? colorScale(country.population) : "#eee";
+                    })
+                    .attr("stroke", "#fff");
+            } catch (error) {
+                showError('Failed to load map data');
+                console.error(error);
+            }
+        }
+
+        function updateFilters() {
+            const regions = [...new Set(populationData.countries.map(c => c.region))];
+            const regionSelect = document.getElementById('regionFilter');
+            regions.forEach(region => {
+                const option = document.createElement('option');
+                option.value = region;
+                option.textContent = region;
+                regionSelect.appendChild(option);
+            });
+
+            // Event listeners
+            document.getElementById('yearSlider').addEventListener('input', updateDashboard);
+            document.getElementById('regionFilter').addEventListener('change', updateDashboard);
+            document.getElementById('countrySearch').addEventListener('input', updateDashboard);
+        }
+
+        function updateDashboard() {
+            const year = document.getElementById('yearSlider').value;
+            const region = document.getElementById('regionFilter').value;
+            const searchTerm = document.getElementById('countrySearch').value.toLowerCase();
+
+            document.getElementById('yearValue').textContent = year;
+
+            const filteredData = populationData.countries.filter(c => {
+                return (region === 'all' || c.region === region) &&
+                       (c.name.toLowerCase().includes(searchTerm) ||
+                        c.capital.toLowerCase().includes(searchTerm));
+            }).sort((a, b) => b.population - a.population);
+
+            // Update charts
+            populationChart.data.labels = filteredData.map(c => c.name);
+            populationChart.data.datasets[0].data = filteredData.map(c => c.population);
+            populationChart.update();
+
+            growthChart.data.labels = populationData.globalGrowth.map(g => g.year);
+            growthChart.data.datasets[0].data = populationData.globalGrowth.map(g => g.population);
+            growthChart.update();
+        }
+
+        function showError(message) {
+            document.getElementById('error').style.display = 'block';
+            document.getElementById('error').textContent = message;
+        }
+
+        async function initialize() {
+            document.getElementById('loading').style.display = 'block';
+            
+            try {
+                const data = await fetchData();
+                if (!data) return;
+
+                populationData = data;
+                initCharts();
+                updateFilters();
+                await initWorldMap();
+                updateDashboard();
+            } finally {
+                document.getElementById('loading').style.display = 'none';
+            }
+        }
+
+        window.onload = initialize;
+    </script>
+</body>
+</html>
